@@ -39,6 +39,7 @@ import Data.String (String)
 import qualified Options.Applicative as Opt
 import qualified Prometheus
 import qualified System.Clock as Clock
+import System.Environment (getEnvironment)
 import System.Posix (getWorkingDirectory)
 import qualified System.Process as Process
 import Text.Show (Show(..))
@@ -164,6 +165,11 @@ planExitCodeMetric =
 runTerraform :: (MonadLogger m, MonadIO m, HasCallStack) => Config -> ByteString -> [ByteString] -> m ProcessResult
 runTerraform Config{terraformBinary, workingDirectory, terraformLogLevel, awsCredentials, gitHubToken, commandDuration} cmd args = do
   start <- liftIO $ Clock.getTime Clock.Monotonic
+  initEnv <- liftIO getEnvironment
+  let process = (Process.proc terraformBinary terraformArgs)
+                { Process.env = Just (initEnv ++ env)
+                , Process.cwd = Just workingDirectory
+                }
   (exitCode, out, err) <- liftIO $ Process.readCreateProcessWithExitCode process ""
   end <- liftIO $ Clock.getTime Clock.Monotonic
   let duration = Clock.toNanoSecs (end `Clock.diffTimeSpec` start) % 1000000000
@@ -173,10 +179,6 @@ runTerraform Config{terraformBinary, workingDirectory, terraformLogLevel, awsCre
   pure result
   where
     terraformArgs = map toS (cmd:args)
-    process = (Process.proc terraformBinary terraformArgs)
-              { Process.env = Just env
-              , Process.cwd = Just workingDirectory
-              }
     -- See https://www.terraform.io/docs/configuration/environment-variables.html
     -- and https://www.terraform.io/guides/running-terraform-in-automation.html
     -- for more information.
