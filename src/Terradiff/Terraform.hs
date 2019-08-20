@@ -55,6 +55,8 @@ data FlagConfig
   , workingDirectory :: Maybe FilePath
     -- | Optional Terraform log level. If unspecified, we let Terraform decide.
   , flagTerraformLogLevel :: Maybe String
+    -- | Whether to enable Terraform state locking
+  , flagTerraformLocking :: Bool
     -- | Files containing optional AWS credentials
   , awsCredentialsFiles :: Maybe AWSCredentialsFiles
     -- | File to load an optional GitHub token from
@@ -93,6 +95,11 @@ flags =
           [ Opt.long "terraform-log-level"
           , Opt.help "Log level for Terraform itself. Useful for debugging errors. One of 'TRACE', 'DEBUG', 'INFO', 'WARN', or 'ERROR'."
           ]))
+  <*> Opt.switch
+        (fold
+         [ Opt.long "terraform-locking"
+         , Opt.help "Whether to use Terraform state locking"
+         ])
   <*> optional awsCredentialsFlags
   <*> optional
         (Opt.option
@@ -114,6 +121,8 @@ data Config
   , workingDirectory :: FilePath
     -- | Optional Terraform log level. If unspecified, we let Terraform decide.
   , terraformLogLevel :: Maybe String
+    -- | Whether to enable Terraform state locking
+  , terraformLocking :: Bool
     -- | Optional AWS credentials
   , awsCredentials :: Maybe AWSCredentials
     -- | Optional GitHub credentials
@@ -132,7 +141,7 @@ data Config
 -- actually relevant for correct operation, as the directory can always be
 -- deleted or turned into a file while we are running.
 validateFlagConfig :: (HasCallStack, MonadIO io) => FlagConfig -> io Config
-validateFlagConfig FlagConfig{terraformBinary, workingDirectory, flagTerraformPath, flagTerraformLogLevel, awsCredentialsFiles, gitHubTokenFile} = do
+validateFlagConfig FlagConfig{terraformBinary, workingDirectory, flagTerraformPath, flagTerraformLogLevel, flagTerraformLocking, awsCredentialsFiles, gitHubTokenFile} = do
   awsCreds <- traverse awsCredentialsFromFiles awsCredentialsFiles
   gitHubToken <- traverse gitHubTokenFromFile gitHubTokenFile
   -- Working directory is the current directory if not specified
@@ -141,7 +150,7 @@ validateFlagConfig FlagConfig{terraformBinary, workingDirectory, flagTerraformPa
   let tfPath = fromMaybe workDir flagTerraformPath
   commandDuration <- liftIO $ Prometheus.registerIO commandDurationMetric
   planExitCode <- liftIO $ Prometheus.registerIO planExitCodeMetric
-  pure $ Config terraformBinary tfPath workDir flagTerraformLogLevel awsCreds gitHubToken commandDuration planExitCode
+  pure $ Config terraformBinary tfPath workDir flagTerraformLogLevel flagTerraformLocking awsCreds gitHubToken commandDuration planExitCode
 
 -- | Metric used to report on how long commands take to run.
 commandDurationMetric :: HasCallStack => IO (Prometheus.Metric (Prometheus.Vector (String, String) Prometheus.Histogram))
@@ -267,7 +276,11 @@ formatProcessResult ProcessResult{processTitle, processInfo, processExitCode, pr
 -- quotes as it wouldn't prevent someone messing with the .terraform directory
 -- behind our backs.
 init :: (MonadIO m, MonadLogger m) => Config -> m ProcessResult
-init config = runTerraform config "init" [toS (terraformPath config)]
+init config =
+  runTerraform config "init"
+    [ toS ("-lock=" ++ Protolude.show (terraformLocking config))
+    , toS (terraformPath config)
+    ]
 
 -- | Refresh the Terraform state by examining actual infrastructure.
 --
@@ -275,12 +288,21 @@ init config = runTerraform config "init" [toS (terraformPath config)]
 --
 -- NOTE: The output of this command might include secrets.
 refresh :: (MonadIO m, MonadLogger m) => Config -> m ProcessResult
-refresh config = runTerraform config "refresh" [toS (terraformPath config)]
+refresh config =
+  runTerraform config "refresh"
+    [ toS ("-lock=" ++ Protolude.show (terraformLocking config))
+    , toS (terraformPath config)
+    ]
 
 -- | Generate a Terraform plan.
 plan :: (MonadIO m, MonadLogger m) => Config -> m ProcessResult
 plan config =
-  runTerraform config "plan" ["-detailed-exitcode", "-refresh=false", toS (terraformPath config)]
+  runTerraform config "plan"
+    [ toS ("-lock=" ++ Protolude.show (terraformLocking config))
+    , "-detailed-exitcode"
+    , "-refresh=false"
+    , toS (terraformPath config)
+    ]
 
 -- | Files that contain AWS credentials.
 --
